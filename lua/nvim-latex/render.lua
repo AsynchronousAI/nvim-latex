@@ -400,25 +400,25 @@ local function render_item(bufnr, item)
     end
 
     local cell_w, cell_h = terminal.get_cell_size()
-    local dpr = config.options.dpr or 2.0
-    local pixel_per_col = cell_w * dpr
-    local pixel_per_row = cell_h * dpr
+    local pixel_per_col = cell_w
+    local pixel_per_row = cell_h
 
     -- Calculate exact column and row grid dimensions proportional to actual pixel width
     -- Prevents small-height symbols (dots, dashes) from being blown up into massive shapes
+    -- and ensures inline formulas are not squeezed into narrow columns by Kitty
     local cols, rows
     if is_inline then
       rows = 1
       local max_height = rows * pixel_per_row
       local scale = math.min(1.0, max_height / ph)
       local display_width = pw * scale
-      cols = math.max(1, math.floor(display_width / pixel_per_col + 0.5))
+      cols = math.max(1, math.ceil(display_width / pixel_per_col))
     else
-      rows = math.max(1, math.min(10, math.floor(ph / pixel_per_row + 0.5)))
+      rows = math.max(1, math.min(16, math.ceil(ph / pixel_per_row)))
       local max_height = rows * pixel_per_row
       local scale = math.min(1.0, max_height / ph)
       local display_width = pw * scale
-      cols = math.max(1, math.floor(display_width / pixel_per_col + 0.5))
+      cols = math.max(1, math.ceil(display_width / pixel_per_col))
     end
 
     local image_id = terminal.next_image_id()

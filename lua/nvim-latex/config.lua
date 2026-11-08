@@ -16,8 +16,8 @@ M.defaults = {
     block = { "$$", "$$" },
   },
 
-  -- Base font size (in pixels) for RaTeX rendering (24 gives prominent, highly legible glyphs)
-  font_size = 24,
+  -- Base font size (in pixels) for RaTeX rendering (32 matches standard editor text height)
+  font_size = 32,
 
   -- Render scale factor / Device Pixel Ratio (e.g. 2.0 or 3.0 for ultra-crisp Retina / 4K rendering)
   dpr = 2.0,
@@ -39,9 +39,9 @@ M.defaults = {
   -- Prevents phantom wrapped blank lines when rendered latex comfortably fits on screen
   auto_wrap_mode = true,
 
-  -- Default cell dimensions (pixels) fallback when terminal ioctl is unavailable
-  cell_width = 9,
-  cell_height = 18,
+  -- Default cell dimensions (points) fallback when terminal ioctl is unavailable
+  cell_width = 11,
+  cell_height = 26,
 
   -- Debounce delay (in milliseconds) for re-scanning buffer changes
   debounce_ms = 150,

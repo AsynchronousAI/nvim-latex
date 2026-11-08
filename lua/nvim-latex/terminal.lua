@@ -45,16 +45,18 @@ function M.is_supported()
   return true -- optimistic default for modern terminals
 end
 
---- Query character cell dimensions (pixels) via ioctl
+--- Query character cell dimensions in terminal device pixels
 function M.get_cell_size()
-  local cell_w = config.options.cell_width or 9
-  local cell_h = config.options.cell_height or 18
+  local dpr = config.options.dpr or 2.0
+  local fallback_w = (config.options.cell_width or 11) * dpr
+  local fallback_h = (config.options.cell_height or 26) * dpr
 
   local ok, ffi = pcall(require, "ffi")
   if not ok then
-    return cell_w, cell_h
+    return fallback_w, fallback_h
   end
 
+  local cell_w, cell_h = fallback_w, fallback_h
   pcall(function()
     ffi.cdef([[
       typedef struct {
@@ -69,8 +71,12 @@ function M.get_cell_size()
     local TIOCGWINSZ = (vim.fn.has("mac") == 1 or vim.fn.has("bsd") == 1) and 0x40087468 or 0x5413
     local sz = ffi.new("winsize")
     if ffi.C.ioctl(1, TIOCGWINSZ, sz) == 0 and sz.col > 0 and sz.row > 0 and sz.xpixel > 0 and sz.ypixel > 0 then
-      cell_w = sz.xpixel / sz.col
-      cell_h = sz.ypixel / sz.row
+      local raw_w = sz.xpixel / sz.col
+      local raw_h = sz.ypixel / sz.row
+      if raw_w > 0 and raw_h > 0 then
+        cell_w = raw_w
+        cell_h = raw_h
+      end
     end
   end)
 
