@@ -113,11 +113,16 @@ function M.parse_comments_treesitter(bufnr)
 
   local all_items = {}
   for _, node in query:iter_captures(root, bufnr, 0, -1) do
-    local sr, sc, er, ec = node:range()
-    local text = vim.treesitter.get_node_text(node, bufnr)
-    local items = extract_from_comment(text, sr, sc, bufnr)
-    for _, item in ipairs(items) do
-      table.insert(all_items, item)
+    if type(node) == "table" and not getmetatable(node) then
+      node = node[1]
+    end
+    if node and type(node.range) == "function" then
+      local sr, sc, er, ec = node:range()
+      local text = vim.treesitter.get_node_text(node, bufnr)
+      local items = extract_from_comment(text, sr, sc, bufnr)
+      for _, item in ipairs(items) do
+        table.insert(all_items, item)
+      end
     end
   end
 

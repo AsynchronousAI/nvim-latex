@@ -2,6 +2,20 @@ local config = require("nvim-latex.config")
 local render = require("nvim-latex.render")
 local terminal = require("nvim-latex.terminal")
 
+-- Defensive guard for Neovim 0.12+ Tree-sitter directive compatibility
+if vim.treesitter and vim.treesitter.get_node_text then
+  local orig_get_node_text = vim.treesitter.get_node_text
+  vim.treesitter.get_node_text = function(node, source, opts)
+    if type(node) == "table" and not getmetatable(node) then
+      node = node[1]
+    end
+    if not node then
+      return ""
+    end
+    return orig_get_node_text(node, source, opts)
+  end
+end
+
 local M = {}
 
 local is_enabled = true
