@@ -16,8 +16,8 @@ M.defaults = {
     block = { "$$", "$$" },
   },
 
-  -- Base font size (in pixels) for RaTeX rendering (controls formula size)
-  font_size = 28,
+  -- Base font size (in pixels) for RaTeX rendering (18-20 crisply matches standard terminal text)
+  font_size = 18,
 
   -- Render scale factor / Device Pixel Ratio (e.g. 2.0 or 3.0 for ultra-crisp Retina / 4K rendering)
   dpr = 2.0,

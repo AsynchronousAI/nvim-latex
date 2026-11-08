@@ -329,17 +329,25 @@ local function render_item(bufnr, item)
     end
 
     local cell_w, cell_h = terminal.get_cell_size()
-    local aspect = pw / ph
-    local cell_aspect = cell_h / cell_w -- cell height-to-width ratio (typically ~2.0)
+    local dpr = config.options.dpr or 2.0
+    local pixel_per_col = cell_w * dpr
+    local pixel_per_row = cell_h * dpr
 
-    -- Calculate exact column and row grid dimensions preserving aspect ratio without extra side padding
+    -- Calculate exact column and row grid dimensions proportional to actual pixel width
+    -- Prevents small-height symbols (dots, dashes) from being blown up into massive shapes
     local cols, rows
     if is_inline then
       rows = 1
-      cols = math.max(1, math.floor(aspect * rows * cell_aspect + 0.5))
+      local max_height = rows * pixel_per_row
+      local scale = math.min(1.0, max_height / ph)
+      local display_width = pw * scale
+      cols = math.max(1, math.floor(display_width / pixel_per_col + 0.5))
     else
-      rows = math.max(1, math.min(10, math.floor(ph / cell_h + 0.5)))
-      cols = math.max(1, math.floor(aspect * rows * cell_aspect + 0.5))
+      rows = math.max(1, math.min(10, math.floor(ph / pixel_per_row + 0.5)))
+      local max_height = rows * pixel_per_row
+      local scale = math.min(1.0, max_height / ph)
+      local display_width = pw * scale
+      cols = math.max(1, math.floor(display_width / pixel_per_col + 0.5))
     end
 
     local image_id = terminal.next_image_id()
