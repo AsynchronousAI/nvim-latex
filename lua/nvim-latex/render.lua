@@ -400,25 +400,23 @@ local function render_item(bufnr, item)
     end
 
     local cell_w, cell_h = terminal.get_cell_size()
-    local pixel_per_col = cell_w
-    local pixel_per_row = cell_h
 
-    -- Calculate exact column and row grid dimensions proportional to actual pixel width
-    -- Prevents small-height symbols (dots, dashes) from being blown up into massive shapes
-    -- and ensures inline formulas are not squeezed into narrow columns by Kitty
+    -- Calculate exact column and row grid dimensions:
+    -- In Kitty graphics protocol, terminal emulators scale Unicode placeholder images to fill the allocated columns.
+    -- To ensure inline formulas match the surrounding text font height and never overflow into adjacent lines,
+    -- target height is capped to standard text cap-height (~82% of cell height), and columns are derived proportionally.
     local cols, rows
     if is_inline then
       rows = 1
-      local max_height = rows * pixel_per_row
-      local scale = math.min(1.0, max_height / ph)
-      local display_width = pw * scale
-      cols = math.max(1, math.ceil(display_width / pixel_per_col))
+      local max_target_h = math.floor(cell_h * 0.82)
+      local target_h = math.min(ph, max_target_h)
+      cols = math.max(1, math.floor((target_h / cell_w) * (pw / ph) + 0.5))
     else
-      rows = math.max(1, math.min(16, math.ceil(ph / pixel_per_row)))
-      local max_height = rows * pixel_per_row
+      rows = math.max(1, math.min(16, math.ceil(ph / cell_h)))
+      local max_height = rows * cell_h
       local scale = math.min(1.0, max_height / ph)
       local display_width = pw * scale
-      cols = math.max(1, math.ceil(display_width / pixel_per_col))
+      cols = math.max(1, math.ceil(display_width / cell_w))
     end
 
     local image_id = terminal.next_image_id()
