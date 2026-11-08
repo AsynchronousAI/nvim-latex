@@ -20,8 +20,11 @@ M.defaults = {
     block = { "$$", "$$" },
   },
 
-  -- Base font size (in pixels) for RaTeX rendering (28 gives crisp glyphs matching standard fonts)
+  -- Base font size (in pixels) for RaTeX rendering (controls formula size)
   font_size = 28,
+
+  -- Render scale factor / Device Pixel Ratio (e.g. 2.0 or 3.0 for ultra-crisp Retina / 4K rendering)
+  dpr = 2.0,
 
   -- Padding around formula glyphs (0 eliminates extra empty margin/box padding)
   padding = 0,

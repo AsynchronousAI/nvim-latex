@@ -100,6 +100,7 @@ function M.get_color(is_comment)
 end
 
 --- Asynchronously compile a LaTeX formula to a transparent PNG
+--- Supports dynamic high-resolution scaling (DPR) matching font size
 ---@param formula string Raw LaTeX formula
 ---@param is_inline boolean True for inline $...$, false for block $$...$$
 ---@param is_comment boolean Whether formula is inside a code comment
@@ -113,11 +114,12 @@ function M.compile(formula, is_inline, is_comment, callback)
 
   local color = M.get_color(is_comment)
   local font_size = config.options.font_size or 28
+  local dpr = config.options.dpr or 2.0
   local padding = config.options.padding or 0
   local cache_dir = config.options.cache_dir or (vim.fn.stdpath("cache") .. "/nvim-latex")
   vim.fn.mkdir(cache_dir, "p")
 
-  local hash_input = string.format("%s_%s_%s_%d_%d", formula, is_inline and "inline" or "block", color, font_size, padding)
+  local hash_input = string.format("%s_%s_%s_%d_%d_%.2f", formula, is_inline and "inline" or "block", color, font_size, padding, dpr)
   local hash = vim.fn.sha256(hash_input)
   local final_png = string.format("%s/%s.png", cache_dir, hash)
 
@@ -138,6 +140,8 @@ function M.compile(formula, is_inline, is_comment, callback)
     tmp_dir,
     "--font-size",
     tostring(font_size),
+    "--dpr",
+    string.format("%.2f", dpr),
     "--padding",
     tostring(padding),
     "--color",
