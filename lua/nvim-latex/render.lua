@@ -206,6 +206,13 @@ local function collapse_formula(bufnr, f)
     f.extmark_id = nil
   end
 
+  -- Clear any other extmarks in namespace 'ns' that overlap this exact range
+  -- Prevents duplicate inline virt_text (which causes 'aa bb cc nn' duplication)
+  local old_marks = vim.api.nvim_buf_get_extmarks(bufnr, ns, { f.range[1], f.range[2] }, { f.range[3], f.range[4] }, {})
+  for _, m in ipairs(old_marks) do
+    pcall(vim.api.nvim_buf_del_extmark, bufnr, ns, m[1])
+  end
+
   local line_count = vim.api.nvim_buf_line_count(bufnr)
   if f.range[1] >= line_count or f.range[3] >= line_count then
     return
@@ -268,6 +275,10 @@ local function expand_formula(bufnr, f)
   if f.extmark_id and vim.api.nvim_buf_is_valid(bufnr) then
     pcall(vim.api.nvim_buf_del_extmark, bufnr, ns, f.extmark_id)
     f.extmark_id = nil
+  end
+  local old_marks = vim.api.nvim_buf_get_extmarks(bufnr, ns, { f.range[1], f.range[2] }, { f.range[3], f.range[4] }, {})
+  for _, m in ipairs(old_marks) do
+    pcall(vim.api.nvim_buf_del_extmark, bufnr, ns, m[1])
   end
   f.pad = 0
   f.is_expanded = true
@@ -393,9 +404,19 @@ local function render_item(bufnr, item)
     return
   end
 
+  -- Guard against concurrent duplicate compilations for the same formula
+  buf_state.pending = buf_state.pending or {}
+  if buf_state.pending[key] then
+    return
+  end
+  buf_state.pending[key] = true
+
   local is_inline = item.type == "inline"
   ratex.compile(item.formula, is_inline, item.is_comment, function(png_path, pw, ph, err)
     if not png_path or err or not vim.api.nvim_buf_is_valid(bufnr) then
+      if buf_state and buf_state.pending then
+        buf_state.pending[key] = nil
+      end
       return
     end
 
@@ -431,6 +452,10 @@ local function render_item(bufnr, item)
     local target_h = rows * ch
 
     ratex.fit_to_canvas(png_path, pw, ph, target_w, target_h, function(final_png)
+      if buf_state and buf_state.pending then
+        buf_state.pending[key] = nil
+      end
+
       if not vim.api.nvim_buf_is_valid(bufnr) then
         return
       end
@@ -458,6 +483,16 @@ local function render_item(bufnr, item)
         delim_extmark_ids = {},
         is_expanded = false,
       }
+
+      local old_f = buf_state.formulas[key]
+      if old_f then
+        if old_f.extmark_id then
+          pcall(vim.api.nvim_buf_del_extmark, bufnr, ns, old_f.extmark_id)
+        end
+        if old_f.id and old_f.id ~= image_id then
+          terminal.delete_image(old_f.id)
+        end
+      end
 
       buf_state.formulas[key] = f_record
 
@@ -518,6 +553,9 @@ function M.refresh_buffer(bufnr)
         terminal.delete_image(f.id)
       end
       buf_state.formulas[k] = nil
+      if buf_state.pending then
+        buf_state.pending[k] = nil
+      end
     end
   end
 end
@@ -575,6 +613,9 @@ function M.clean_buffer(bufnr)
       terminal.delete_image(f.id)
     end
   end
+
+  pcall(vim.api.nvim_buf_clear_namespace, bufnr, ns, 0, -1)
+  pcall(vim.api.nvim_buf_clear_namespace, bufnr, delim_ns, 0, -1)
 
   local win = vim.api.nvim_get_current_win()
   if vim.api.nvim_win_is_valid(win) and buf_state.initial_wrap ~= nil then

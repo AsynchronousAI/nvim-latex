@@ -99,6 +99,7 @@ function M.parse_comments_treesitter(bufnr)
   end
 
   local all_items = {}
+  local seen_ranges = {}
   for _, node in query:iter_captures(root, bufnr, 0, -1) do
     if type(node) == "table" and not getmetatable(node) then
       node = node[1]
@@ -108,7 +109,11 @@ function M.parse_comments_treesitter(bufnr)
       local text = vim.treesitter.get_node_text(node, bufnr)
       local items = extract_from_comment(text, sr, sc, bufnr)
       for _, item in ipairs(items) do
-        table.insert(all_items, item)
+        local rk = string.format("%d_%d_%d_%d", item.range[1], item.range[2], item.range[3], item.range[4])
+        if not seen_ranges[rk] then
+          seen_ranges[rk] = true
+          table.insert(all_items, item)
+        end
       end
     end
   end
