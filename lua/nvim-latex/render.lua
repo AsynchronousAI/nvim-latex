@@ -400,67 +400,83 @@ local function render_item(bufnr, item)
     end
 
     local cell_w, cell_h = terminal.get_cell_size()
+    local cw = math.floor(cell_w + 0.5)
+    local ch = math.floor(cell_h + 0.5)
 
     -- Calculate exact column and row grid dimensions:
     -- In Kitty graphics protocol, terminal emulators scale Unicode placeholder images to fit the allocated columns.
-    -- To ensure all capital letters (A, B, K, N...) render at uniform cap-height without narrower letters
-    -- being squashed into 1 column, we calculate columns using the display width with a minor sub-cell tolerance.
+    -- By transparently padding the canvas to exact cell multiples (cols * cw, rows * ch), terminal scaling factor
+    -- is strictly 1.000, ensuring every single glyph renders at its exact natural font size without distortion.
     local cols, rows
+    local scale = 1.0
     if is_inline then
       rows = 1
-      local max_height = rows * cell_h
-      local scale = math.min(1.0, max_height / ph)
+      local max_height = rows * ch
+      if ph > max_height then
+        scale = max_height / ph
+      end
       local display_width = pw * scale
-      cols = math.max(1, math.ceil((display_width - 2) / cell_w))
+      cols = math.max(1, math.ceil((display_width - 2) / cw))
     else
-      rows = math.max(1, math.min(16, math.ceil(ph / cell_h)))
-      local max_height = rows * cell_h
-      local scale = math.min(1.0, max_height / ph)
+      rows = math.max(1, math.min(16, math.ceil(ph / ch)))
+      local max_height = rows * ch
+      if ph > max_height then
+        scale = max_height / ph
+      end
       local display_width = pw * scale
-      cols = math.max(1, math.ceil(display_width / cell_w))
+      cols = math.max(1, math.ceil((display_width - 2) / cw))
     end
 
-    local image_id = terminal.next_image_id()
-    local ok = terminal.transmit_and_place(image_id, png_path, cols, rows)
-    if not ok then
-      return
-    end
+    local target_w = cols * cw
+    local target_h = rows * ch
 
-    local lines, hl_group = terminal.create_placeholder_grid(image_id, cols, rows)
-
-    local f_record = {
-      id = image_id,
-      key = key,
-      formula = item.formula,
-      type = item.type,
-      range = item.range,
-      cols = cols,
-      rows = rows,
-      pad = 0,
-      placeholder_lines = lines,
-      hl_group = hl_group,
-      extmark_id = nil,
-      delim_extmark_ids = {},
-      is_expanded = false,
-    }
-
-    buf_state.formulas[key] = f_record
-
-    -- Check if cursor / visual selection is currently overlapping this formula
-    local win = vim.api.nvim_get_current_win()
-    if vim.api.nvim_win_get_buf(win) == bufnr then
-      local s_line, e_line = get_active_selection_range(win)
-      if formula_touches_range(f_record, s_line, e_line) and config.options.expand_on_cursor then
-        expand_formula(bufnr, f_record)
-        M.update_wrap_mode(win, bufnr)
+    ratex.fit_to_canvas(png_path, pw, ph, target_w, target_h, function(final_png)
+      if not vim.api.nvim_buf_is_valid(bufnr) then
         return
       end
-    end
 
-    collapse_formula(bufnr, f_record)
-    if vim.api.nvim_win_get_buf(win) == bufnr then
-      M.update_wrap_mode(win, bufnr)
-    end
+      local image_id = terminal.next_image_id()
+      local ok = terminal.transmit_and_place(image_id, final_png, cols, rows)
+      if not ok then
+        return
+      end
+
+      local lines, hl_group = terminal.create_placeholder_grid(image_id, cols, rows)
+
+      local f_record = {
+        id = image_id,
+        key = key,
+        formula = item.formula,
+        type = item.type,
+        range = item.range,
+        cols = cols,
+        rows = rows,
+        pad = 0,
+        placeholder_lines = lines,
+        hl_group = hl_group,
+        extmark_id = nil,
+        delim_extmark_ids = {},
+        is_expanded = false,
+      }
+
+      buf_state.formulas[key] = f_record
+
+      -- Check if cursor / visual selection is currently overlapping this formula
+      local win = vim.api.nvim_get_current_win()
+      if vim.api.nvim_win_get_buf(win) == bufnr then
+        local s_line, e_line = get_active_selection_range(win)
+        if formula_touches_range(f_record, s_line, e_line) and config.options.expand_on_cursor then
+          expand_formula(bufnr, f_record)
+          M.update_wrap_mode(win, bufnr)
+          return
+        end
+      end
+
+      collapse_formula(bufnr, f_record)
+      if vim.api.nvim_win_get_buf(win) == bufnr then
+        M.update_wrap_mode(win, bufnr)
+      end
+    end)
   end)
 end
 

@@ -175,4 +175,102 @@ function M.compile(formula, is_inline, is_comment, callback)
   end)
 end
 
+--- Transparently pad or resample PNG so canvas matches exact terminal grid boundaries
+--- Ensures Ghostty / Kitty scales image by exactly 1.000, eliminating arbitrary enlargement
+---@param png_path string Path to source PNG
+---@param pw number|nil Source pixel width
+---@param ph number|nil Source pixel height
+---@param target_w number Target width in device pixels (cols * cell_width)
+---@param target_h number Target height in device pixels (rows * cell_height)
+---@param callback fun(final_png: string)
+function M.fit_to_canvas(png_path, pw, ph, target_w, target_h, callback)
+  if not png_path or vim.fn.filereadable(png_path) ~= 1 then
+    callback(png_path)
+    return
+  end
+
+  target_w = math.max(1, math.floor(target_w + 0.5))
+  target_h = math.max(1, math.floor(target_h + 0.5))
+
+  if not pw or not ph then
+    pw, ph = M.get_png_dimensions(png_path)
+    if not pw or not ph then
+      callback(png_path)
+      return
+    end
+  end
+
+  -- If image already matches the exact target dimensions, no padding needed
+  if pw == target_w and ph == target_h then
+    callback(png_path)
+    return
+  end
+
+  local padded_png = string.format("%s_%dx%d.png", png_path:gsub("%.png$", ""), target_w, target_h)
+  if vim.fn.filereadable(padded_png) == 1 then
+    callback(padded_png)
+    return
+  end
+
+  -- Detect available image processing tool
+  local is_mac = vim.fn.has("mac") == 1
+  local has_sips = is_mac and vim.fn.executable("sips") == 1
+
+  if has_sips then
+    local args
+    if ph > target_h then
+      -- If formula height exceeds target height, resample height to fit, then pad to target_w
+      args = { "sips", "--resampleHeight", tostring(target_h), "-p", tostring(target_h), tostring(target_w), png_path, "--out", padded_png }
+    else
+      args = { "sips", "-p", tostring(target_h), tostring(target_w), png_path, "--out", padded_png }
+    end
+
+    vim.system(args, {}, function(obj)
+      vim.schedule(function()
+        if obj.code == 0 and vim.fn.filereadable(padded_png) == 1 then
+          callback(padded_png)
+        else
+          callback(png_path)
+        end
+      end)
+    end)
+    return
+  end
+
+  -- Fallback for Linux: check magick or convert
+  local has_magick = vim.fn.executable("magick") == 1
+  local has_convert = not has_magick and vim.fn.executable("convert") == 1
+  local cmd = has_magick and "magick" or (has_convert and "convert" or nil)
+
+  if cmd then
+    local geom = string.format("%dx%d", target_w, target_h)
+    local args = {
+      cmd,
+      png_path,
+      "-resize",
+      geom .. ">",
+      "-gravity",
+      "center",
+      "-background",
+      "none",
+      "-extent",
+      geom,
+      padded_png,
+    }
+    vim.system(args, {}, function(obj)
+      vim.schedule(function()
+        if obj.code == 0 and vim.fn.filereadable(padded_png) == 1 then
+          callback(padded_png)
+        else
+          callback(png_path)
+        end
+      end)
+    end)
+    return
+  end
+
+  -- No external padding tool available: pass through raw png
+  callback(png_path)
+end
+
 return M
