@@ -53,7 +53,7 @@ local function extract_from_comment(text, sr, sc, bufnr)
     end
     local char_before = s > 1 and text:sub(s - 1, s - 1) or ""
     local char_after = e < #text and text:sub(e + 1, e + 1) or ""
-    if char_before ~= "$" and char_after ~= "$" and not occupied[s] then
+    if char_before ~= "$" and char_after ~= "$" and char_before ~= "\\" and not occupied[s] then
       local start_r, start_c = index_to_pos(text, sr, sc, s)
       local end_r, end_c = index_to_pos(text, sr, sc, e + 1)
       table.insert(items, {
@@ -225,7 +225,7 @@ function M.parse_markdown(bufnr)
           end
           local char_before = s > 1 and line:sub(s - 1, s - 1) or ""
           local char_after = e < #line and line:sub(e + 1, e + 1) or ""
-          if char_before ~= "$" and char_after ~= "$" and not occupied[s] then
+          if char_before ~= "$" and char_after ~= "$" and char_before ~= "\\" and not occupied[s] then
             table.insert(items, {
               bufnr = bufnr,
               type = "inline",

@@ -6,30 +6,79 @@ local parser = require("nvim-latex.parser")
 local M = {}
 
 local ns = vim.api.nvim_create_namespace("nvim_latex")
-M.ns = ns
+local delim_ns = vim.api.nvim_create_namespace("nvim_latex_delimiters")
 
--- Buffer state map: bufnr -> { formulas = { [key] = formula_record }, active_formula = nil, timer = nil }
+M.ns = ns
+M.delim_ns = delim_ns
+
+-- Setup default subtle delimiter highlight (slightly transparent / dimmed like * or **)
+vim.api.nvim_set_hl(0, "NvimLatexDelimiter", {
+  fg = "#6e7681",
+  default = true,
+})
+
+-- Buffer state map: bufnr -> { formulas = { [key] = formula_record }, active_line = nil, timer = nil }
 local state = {}
 
---- Check if cursor (0-indexed row, col) is inside a formula range
----@param r number
----@param c number
----@param range table { start_row, start_col, end_row, end_col }
+--- Check if a formula spans across a specific buffer line
+---@param f table Formula record
+---@param line number 0-indexed line number
 ---@return boolean
-local function is_cursor_inside(r, c, range)
-  if r < range[1] or r > range[3] then
-    return false
+local function formula_touches_line(f, line)
+  return line >= f.range[1] and line <= f.range[3]
+end
+
+--- Apply subtle delimiter highlight on $ or $$ when expanded
+---@param bufnr number
+---@param f table Formula record
+local function apply_delimiter_highlights(bufnr, f)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
   end
-  if range[1] == range[3] then
-    return c >= range[2] and c <= range[4]
+
+  f.delim_extmark_ids = f.delim_extmark_ids or {}
+
+  -- Clear previous delimiter marks if any
+  for _, mark_id in ipairs(f.delim_extmark_ids) do
+    pcall(vim.api.nvim_buf_del_extmark, bufnr, delim_ns, mark_id)
   end
-  if r == range[1] then
-    return c >= range[2]
+  f.delim_extmark_ids = {}
+
+  local delim_len = f.type == "block" and 2 or 1
+
+  -- Opening delimiter
+  local ok1, id1 = pcall(vim.api.nvim_buf_set_extmark, bufnr, delim_ns, f.range[1], f.range[2], {
+    end_row = f.range[1],
+    end_col = f.range[2] + delim_len,
+    hl_group = "NvimLatexDelimiter",
+    priority = 5000,
+  })
+  if ok1 then
+    table.insert(f.delim_extmark_ids, id1)
   end
-  if r == range[3] then
-    return c <= range[4]
+
+  -- Closing delimiter
+  local ok2, id2 = pcall(vim.api.nvim_buf_set_extmark, bufnr, delim_ns, f.range[3], f.range[4] - delim_len, {
+    end_row = f.range[3],
+    end_col = f.range[4],
+    hl_group = "NvimLatexDelimiter",
+    priority = 5000,
+  })
+  if ok2 then
+    table.insert(f.delim_extmark_ids, id2)
   end
-  return true
+end
+
+--- Clear delimiter highlights when collapsed
+---@param bufnr number
+---@param f table Formula record
+local function clear_delimiter_highlights(bufnr, f)
+  if f.delim_extmark_ids and vim.api.nvim_buf_is_valid(bufnr) then
+    for _, mark_id in ipairs(f.delim_extmark_ids) do
+      pcall(vim.api.nvim_buf_del_extmark, bufnr, delim_ns, mark_id)
+    end
+  end
+  f.delim_extmark_ids = {}
 end
 
 --- Apply extmark to collapse formula into rendered Kitty graphic
@@ -43,7 +92,10 @@ local function collapse_formula(bufnr, f)
     return
   end
 
-  -- Delete previous extmark if present
+  -- Remove subtle delimiter highlights when collapsed into graphic
+  clear_delimiter_highlights(bufnr, f)
+
+  -- Delete previous graphic extmark if present
   if f.extmark_id then
     pcall(vim.api.nvim_buf_del_extmark, bufnr, ns, f.extmark_id)
     f.extmark_id = nil
@@ -88,7 +140,7 @@ local function collapse_formula(bufnr, f)
   end
 end
 
---- Expand formula back into raw editable text
+--- Expand formula back into normal raw text with dimmed $ delimiters
 ---@param bufnr number
 ---@param f table Formula record
 local function expand_formula(bufnr, f)
@@ -97,9 +149,12 @@ local function expand_formula(bufnr, f)
     f.extmark_id = nil
   end
   f.is_expanded = true
+
+  -- Highlight $ delimiters with subtle, slightly transparent color
+  apply_delimiter_highlights(bufnr, f)
 end
 
---- Check cursor position and expand/collapse formulas dynamically
+--- Check cursor line and expand/collapse formulas on a per-line basis
 ---@param bufnr number
 function M.on_cursor_moved(bufnr)
   local buf_state = state[bufnr]
@@ -112,32 +167,25 @@ function M.on_cursor_moved(bufnr)
     return
   end
 
-  local cursor = vim.api.nvim_win_get_cursor(win)
-  local cur_row = cursor[1] - 1
-  local cur_col = cursor[2]
+  local cur_line = vim.api.nvim_win_get_cursor(win)[1] - 1
 
-  local current_hovered_f = nil
-
-  for _, f in pairs(buf_state.formulas) do
-    if is_cursor_inside(cur_row, cur_col, f.range) then
-      current_hovered_f = f
-      break
-    end
+  -- If cursor line hasn't changed, no update needed
+  if buf_state.active_line == cur_line then
+    return
   end
+  buf_state.active_line = cur_line
 
-  -- If hovered formula changed
-  if buf_state.active_formula ~= current_hovered_f then
-    -- Collapse previous active formula if any
-    if buf_state.active_formula and buf_state.active_formula.is_expanded then
-      collapse_formula(bufnr, buf_state.active_formula)
+  -- Any formula on the current cursor line expands to normal text; all other lines collapse
+  for _, f in pairs(buf_state.formulas) do
+    if formula_touches_line(f, cur_line) then
+      if not f.is_expanded then
+        expand_formula(bufnr, f)
+      end
+    else
+      if f.is_expanded then
+        collapse_formula(bufnr, f)
+      end
     end
-
-    -- Expand newly hovered formula
-    if current_hovered_f and not current_hovered_f.is_expanded then
-      expand_formula(bufnr, current_hovered_f)
-    end
-
-    buf_state.active_formula = current_hovered_f
   end
 end
 
@@ -154,7 +202,7 @@ local function render_item(bufnr, item)
 
   -- Check if already rendered and up-to-date
   local existing = buf_state.formulas[key]
-  if existing and existing.extmark_id then
+  if existing and existing.placeholder_lines then
     return
   end
 
@@ -185,18 +233,18 @@ local function render_item(bufnr, item)
       placeholder_lines = lines,
       hl_group = hl_group,
       extmark_id = nil,
+      delim_extmark_ids = {},
       is_expanded = false,
     }
 
     buf_state.formulas[key] = f_record
 
-    -- Check if cursor is currently inside before collapsing
+    -- Check if cursor is currently on this line
     local win = vim.api.nvim_get_current_win()
     if vim.api.nvim_win_get_buf(win) == bufnr then
-      local cursor = vim.api.nvim_win_get_cursor(win)
-      if is_cursor_inside(cursor[1] - 1, cursor[2], item.range) and config.options.expand_on_cursor then
-        f_record.is_expanded = true
-        buf_state.active_formula = f_record
+      local cur_line = vim.api.nvim_win_get_cursor(win)[1] - 1
+      if formula_touches_line(f_record, cur_line) and config.options.expand_on_cursor then
+        expand_formula(bufnr, f_record)
         return
       end
     end
@@ -212,13 +260,13 @@ function M.refresh_buffer(bufnr)
     return
   end
 
-  buf_state = state[bufnr]
+  local buf_state = state[bufnr]
   if not buf_state then
-    state[bufnr] = { formulas = {}, active_formula = nil }
+    state[bufnr] = { formulas = {}, active_line = nil }
     buf_state = state[bufnr]
   end
 
-  -- Ensure conceallevel is set so Neovim can conceal text
+  -- Ensure conceallevel is set so Neovim conceals text
   if vim.wo.conceallevel < 2 then
     vim.wo.conceallevel = 2
   end
@@ -238,6 +286,7 @@ function M.refresh_buffer(bufnr)
       if f.extmark_id then
         pcall(vim.api.nvim_buf_del_extmark, bufnr, ns, f.extmark_id)
       end
+      clear_delimiter_highlights(bufnr, f)
       if f.id then
         terminal.delete_image(f.id)
       end
@@ -251,7 +300,7 @@ end
 function M.debounced_refresh(bufnr)
   local buf_state = state[bufnr]
   if not buf_state then
-    state[bufnr] = { formulas = {}, active_formula = nil }
+    state[bufnr] = { formulas = {}, active_line = nil }
     buf_state = state[bufnr]
   end
 
@@ -294,6 +343,7 @@ function M.clean_buffer(bufnr)
     if f.extmark_id then
       pcall(vim.api.nvim_buf_del_extmark, bufnr, ns, f.extmark_id)
     end
+    clear_delimiter_highlights(bufnr, f)
     if f.id then
       terminal.delete_image(f.id)
     end
