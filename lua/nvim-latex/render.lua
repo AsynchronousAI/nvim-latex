@@ -402,15 +402,16 @@ local function render_item(bufnr, item)
     local cell_w, cell_h = terminal.get_cell_size()
 
     -- Calculate exact column and row grid dimensions:
-    -- In Kitty graphics protocol, terminal emulators scale Unicode placeholder images to fill the allocated columns.
-    -- To ensure inline formulas match the surrounding text font height and never overflow into adjacent lines,
-    -- target height is capped to standard text cap-height (~82% of cell height), and columns are derived proportionally.
+    -- In Kitty graphics protocol, terminal emulators scale Unicode placeholder images to fit the allocated columns.
+    -- To ensure all capital letters (A, B, K, N...) render at uniform cap-height without narrower letters
+    -- being squashed into 1 column, we calculate columns using the display width with a minor sub-cell tolerance.
     local cols, rows
     if is_inline then
       rows = 1
-      local max_target_h = math.floor(cell_h * 0.82)
-      local target_h = math.min(ph, max_target_h)
-      cols = math.max(1, math.floor((target_h / cell_w) * (pw / ph) + 0.5))
+      local max_height = rows * cell_h
+      local scale = math.min(1.0, max_height / ph)
+      local display_width = pw * scale
+      cols = math.max(1, math.ceil((display_width - 2) / cell_w))
     else
       rows = math.max(1, math.min(16, math.ceil(ph / cell_h)))
       local max_height = rows * cell_h
