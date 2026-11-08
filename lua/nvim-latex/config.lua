@@ -16,8 +16,8 @@ M.defaults = {
     block = { "$$", "$$" },
   },
 
-  -- Base font size (in pixels) for RaTeX rendering (21 yields 100% natural, uniform glyphs matching editor cap-height)
-  font_size = 21,
+  -- Base font size (in pixels) for RaTeX rendering (26 yields beautifully sized, prominent glyphs matching editor proportions)
+  font_size = 26,
 
   -- Render scale factor / Device Pixel Ratio (e.g. 2.0 or 3.0 for ultra-crisp Retina / 4K rendering)
   dpr = 2.0,
