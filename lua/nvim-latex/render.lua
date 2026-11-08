@@ -36,6 +36,7 @@ M.setup_highlights()
 
 -- Buffer state map: bufnr -> { formulas = { [key] = formula_record }, active_range = { -1, -1 }, timer = nil }
 local state = {}
+local collapse_formula
 
 --- Get active line range affected by cursor or visual selection
 --- Supports:
@@ -65,63 +66,123 @@ local function get_active_selection_range(win)
   return cur_line, cur_line
 end
 
---- Calculate visual column offset on a line before col_idx, accounting for collapsed formulas
---- Automatically determines if formula would wrap across lines and returns spaces needed
---- to push the formula cleanly to the beginning of the next screen line
+--- Get the exact visual display width of a buffer line taking into account collapsed formulas
 ---@param bufnr number
 ---@param row number 0-indexed line number
----@param col_idx number 0-indexed byte column
----@param formula_cols number Width of the formula in screen cells
----@param text_width number Available window columns
----@return number pad Number of spaces to pad before the formula to prevent splitting across lines
-local function get_wrap_pad(bufnr, row, col_idx, formula_cols, text_width)
-  if text_width <= 0 or formula_cols > text_width then
-    return 0
+---@return number
+function M.get_line_rendered_width(bufnr, row)
+  local lines = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)
+  local line_str = lines[1] or ""
+  local buf_state = state[bufnr]
+  if not buf_state then
+    return vim.fn.strdisplaywidth(line_str)
   end
 
-  local lines = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)
-  local line = lines[1] or ""
-  local prefix = line:sub(1, col_idx)
-
-  local buf_state = state[bufnr]
-  local visual_w = 0
-
-  if not buf_state then
-    visual_w = vim.fn.strdisplaywidth(prefix)
-  else
-    -- Account for any collapsed formulas that appear earlier on this same line
-    local cur_byte = 1
-    while cur_byte <= #prefix do
-      local matched_f = nil
-      for _, other in pairs(buf_state.formulas) do
-        if other.range[1] == row and other.range[2] == cur_byte - 1 and other.range[4] <= col_idx then
-          matched_f = other
-          break
-        end
-      end
-
-      if matched_f and not matched_f.is_expanded and matched_f.cols then
-        visual_w = visual_w + (matched_f.pad or 0) + matched_f.cols
-        cur_byte = matched_f.range[4] + 1
-      else
-        local ch = prefix:sub(cur_byte, cur_byte)
-        if ch == "\t" then
-          local ts = vim.bo[bufnr].tabstop or 8
-          visual_w = visual_w + (ts - (visual_w % ts))
-        else
-          visual_w = visual_w + vim.fn.strdisplaywidth(ch)
-        end
-        cur_byte = cur_byte + 1
-      end
+  local line_formulas = {}
+  for _, f in pairs(buf_state.formulas) do
+    if f.range[1] == row then
+      table.insert(line_formulas, f)
     end
   end
 
-  local col_on_screen = visual_w % text_width
-  if col_on_screen > 0 and (col_on_screen + formula_cols > text_width) then
-    return text_width - col_on_screen
+  if #line_formulas == 0 then
+    return vim.fn.strdisplaywidth(line_str)
   end
 
-  return 0
+  table.sort(line_formulas, function(a, b) return a.range[2] < b.range[2] end)
+
+  local cur_byte = 0
+  local total_w = 0
+  for _, f in ipairs(line_formulas) do
+    local text_seg = line_str:sub(cur_byte + 1, f.range[2])
+    total_w = total_w + vim.fn.strdisplaywidth(text_seg)
+    if f.is_expanded then
+      local raw_seg = line_str:sub(f.range[2] + 1, f.range[4])
+      total_w = total_w + vim.fn.strdisplaywidth(raw_seg)
+    else
+      total_w = total_w + (f.pad or 0) + (f.cols or 1)
+    end
+    cur_byte = f.range[4]
+  end
+
+  local remaining = line_str:sub(cur_byte + 1)
+  total_w = total_w + vim.fn.strdisplaywidth(remaining)
+  return total_w
+end
+
+--- Recalculate line wrapping and padding for all inline formulas in a buffer
+--- Ensures formulas never split across screen line boundaries when 'wrap' is enabled
+--- and ensures line wrapping mode reflects actual rendered formula widths
+---@param bufnr number
+---@param win? number
+function M.update_line_wrapping(bufnr, win)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+
+  local buf_state = state[bufnr]
+  if not buf_state then
+    return
+  end
+
+  win = win or vim.api.nvim_get_current_win()
+  if not win or not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= bufnr then
+    local wins = vim.fn.win_findbuf(bufnr)
+    win = wins and wins[1]
+  end
+
+  if not win or not vim.api.nvim_win_is_valid(win) then
+    return
+  end
+
+  -- Update wrap mode based on rendered line widths
+  M.update_wrap_mode(win, bufnr)
+
+  local is_wrapping = vim.wo[win].wrap
+  local wininfo = vim.fn.getwininfo(win)[1]
+  local text_width = wininfo and (wininfo.width - wininfo.textoff) or (vim.api.nvim_win_get_width(win) - 4)
+
+  -- Group rendered inline formulas by buffer line (row)
+  local line_formulas = {}
+  for _, f in pairs(buf_state.formulas) do
+    if f.type == "inline" and not f.is_expanded and f.cols and f.placeholder_lines then
+      local r = f.range[1]
+      line_formulas[r] = line_formulas[r] or {}
+      table.insert(line_formulas[r], f)
+    end
+  end
+
+  for row, f_list in pairs(line_formulas) do
+    if #f_list > 0 then
+      table.sort(f_list, function(a, b) return a.range[2] < b.range[2] end)
+
+      local lines = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)
+      local line_str = lines[1] or ""
+      local cur_col = 0
+      local cur_byte = 0
+
+      for _, f in ipairs(f_list) do
+        local target_pad = 0
+        if is_wrapping and text_width > 0 and f.cols < text_width then
+          local text_segment = line_str:sub(cur_byte + 1, f.range[2])
+          cur_col = (cur_col + vim.fn.strdisplaywidth(text_segment)) % text_width
+          if cur_col > 0 and (cur_col + f.cols > text_width) then
+            target_pad = text_width - cur_col
+            cur_col = 0
+          end
+          cur_col = (cur_col + f.cols) % text_width
+        end
+
+        cur_byte = f.range[4]
+
+        -- If padding changed, update formula and re-place extmark
+        if f.pad ~= target_pad then
+          f.pad = target_pad
+          collapse_formula(bufnr, f)
+        end
+      end
+    end
+  end
 end
 
 --- Check if a formula spans across or overlaps a specific line range
@@ -189,7 +250,7 @@ end
 --- Apply extmark to collapse formula into rendered Kitty graphic
 ---@param bufnr number
 ---@param f table Formula record
-local function collapse_formula(bufnr, f)
+collapse_formula = function(bufnr, f)
   if not f.placeholder_lines or not f.hl_group then
     return
   end
@@ -219,16 +280,7 @@ local function collapse_formula(bufnr, f)
   end
 
   if f.type == "inline" then
-    local pad = 0
-    local win = vim.api.nvim_get_current_win()
-    if vim.api.nvim_win_is_valid(win) and vim.wo[win].wrap then
-      local wininfo = vim.fn.getwininfo(win)[1]
-      local text_width = wininfo and (wininfo.width - wininfo.textoff) or (vim.api.nvim_win_get_width(win) - 4)
-      local cols = f.cols or (f.placeholder_lines and #f.placeholder_lines[1]) or 1
-      pad = get_wrap_pad(bufnr, f.range[1], f.range[2], cols, text_width)
-    end
-    f.pad = pad
-
+    local pad = f.pad or 0
     local virt_text = {}
     if pad > 0 then
       table.insert(virt_text, { string.rep(" ", pad), "Normal" })
@@ -315,7 +367,7 @@ function M.on_cursor_moved(bufnr)
     end
   end
 
-  M.update_wrap_mode(win, bufnr)
+  M.update_line_wrapping(bufnr, win)
 end
 
 --- Update window line-wrapping mode based on textual (expanded) vs rendered mode
@@ -361,13 +413,13 @@ function M.update_wrap_mode(win, bufnr)
     local text_width = wininfo and (wininfo.width - wininfo.textoff) or (vim.api.nvim_win_get_width(win) - 4)
     local needs_wrap = false
     if text_width > 0 then
+      local checked_rows = {}
       for _, f in pairs(buf_state.formulas) do
-        if not f.is_expanded and f.cols then
-          local lines = vim.api.nvim_buf_get_lines(bufnr, f.range[1], f.range[1] + 1, false)
-          local line_str = lines[1] or ""
-          local raw_len = f.range[4] - f.range[2]
-          local rendered_len = #line_str - raw_len + f.cols + (f.pad or 0)
-          if rendered_len > text_width then
+        local r = f.range[1]
+        if not checked_rows[r] then
+          checked_rows[r] = true
+          local w = M.get_line_rendered_width(bufnr, r)
+          if w > text_width then
             needs_wrap = true
             break
           end
@@ -502,15 +554,13 @@ local function render_item(bufnr, item)
         local s_line, e_line = get_active_selection_range(win)
         if formula_touches_range(f_record, s_line, e_line) and config.options.expand_on_cursor then
           expand_formula(bufnr, f_record)
-          M.update_wrap_mode(win, bufnr)
+          M.update_line_wrapping(bufnr, win)
           return
         end
       end
 
       collapse_formula(bufnr, f_record)
-      if vim.api.nvim_win_get_buf(win) == bufnr then
-        M.update_wrap_mode(win, bufnr)
-      end
+      M.update_line_wrapping(bufnr, win)
     end)
   end)
 end
@@ -558,6 +608,8 @@ function M.refresh_buffer(bufnr)
       end
     end
   end
+
+  M.update_line_wrapping(bufnr)
 end
 
 --- Schedule debounced buffer refresh

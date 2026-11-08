@@ -182,7 +182,7 @@ function M.setup(opts)
     callback = function()
       if is_enabled then
         for b, _ in pairs(attached_buffers) do
-          render.refresh_buffer(b)
+          render.update_line_wrapping(b)
         end
       end
     end,
