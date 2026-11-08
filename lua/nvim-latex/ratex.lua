@@ -73,20 +73,30 @@ function M.get_png_dimensions(path)
 end
 
 --- Get dynamic foreground color matching current editor theme
+--- Fully portable across any user's colorscheme and background mode
 ---@param is_comment boolean
 ---@return string hex_color
 function M.get_color(is_comment)
   if config.options.color then
+    if type(config.options.color) == "function" then
+      return config.options.color(is_comment)
+    end
     return config.options.color
   end
 
   local hl_name = is_comment and "Comment" or "Normal"
-  local hl = vim.api.nvim_get_hl(0, { name = hl_name })
+  local hl = vim.api.nvim_get_hl(0, { name = hl_name, link = false })
   if hl and hl.fg then
     return string.format("#%06x", hl.fg)
   end
 
-  return is_comment and "#8b949e" or "#c9d1d9"
+  -- Dynamic fallback based on light/dark background
+  local is_light = vim.o.background == "light"
+  if is_comment then
+    return is_light and "#5c6370" or "#8b949e"
+  else
+    return is_light and "#24292e" or "#c9d1d9"
+  end
 end
 
 --- Asynchronously compile a LaTeX formula to a transparent PNG
@@ -102,11 +112,12 @@ function M.compile(formula, is_inline, is_comment, callback)
   end
 
   local color = M.get_color(is_comment)
-  local font_size = config.options.font_size or 22
+  local font_size = config.options.font_size or 28
+  local padding = config.options.padding or 0
   local cache_dir = config.options.cache_dir or (vim.fn.stdpath("cache") .. "/nvim-latex")
   vim.fn.mkdir(cache_dir, "p")
 
-  local hash_input = string.format("%s_%s_%s_%d", formula, is_inline and "inline" or "block", color, font_size)
+  local hash_input = string.format("%s_%s_%s_%d_%d", formula, is_inline and "inline" or "block", color, font_size, padding)
   local hash = vim.fn.sha256(hash_input)
   local final_png = string.format("%s/%s.png", cache_dir, hash)
 
@@ -128,7 +139,7 @@ function M.compile(formula, is_inline, is_comment, callback)
     "--font-size",
     tostring(font_size),
     "--padding",
-    "2",
+    tostring(padding),
     "--color",
     color,
     "--background-color",

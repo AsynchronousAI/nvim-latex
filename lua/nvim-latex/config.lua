@@ -20,13 +20,20 @@ M.defaults = {
     block = { "$$", "$$" },
   },
 
-  -- Base font size (in pixels) for RaTeX rendering
-  font_size = 22,
+  -- Base font size (in pixels) for RaTeX rendering (28 gives crisp glyphs matching standard fonts)
+  font_size = 28,
 
-  -- Formula color override (e.g. "#8b949e"). If nil, auto-detects from Comment or Normal highlight
+  -- Padding around formula glyphs (0 eliminates extra empty margin/box padding)
+  padding = 0,
+
+  -- Formula color override (e.g. "#8b949e"). If nil, auto-detects from active colorscheme
   color = nil,
 
-  -- Expand back to raw text when cursor is on/inside the formula
+  -- Highlight group to link the $ delimiter to when expanded (default: "Conceal")
+  -- Compatible with any colorscheme (Catppuccin, TokyoNight, Gruvbox, GitHub, etc.)
+  delimiter_hl = "Conceal",
+
+  -- Expand back to raw text when cursor enters the line
   expand_on_cursor = true,
 
   -- Default cell dimensions (pixels) fallback when terminal ioctl is unavailable

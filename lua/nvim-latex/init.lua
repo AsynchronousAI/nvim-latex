@@ -152,6 +152,18 @@ function M.setup(opts)
     end,
   })
 
+  render.setup_highlights()
+
+  vim.api.nvim_create_autocmd("ColorScheme", {
+    group = augroup,
+    callback = function()
+      render.setup_highlights()
+      for b, _ in pairs(attached_buffers) do
+        render.refresh_buffer(b)
+      end
+    end,
+  })
+
   -- Attach current buffer if already open
   local cur = vim.api.nvim_get_current_buf()
   if is_supported_ft(cur) then

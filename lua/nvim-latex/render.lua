@@ -11,11 +11,28 @@ local delim_ns = vim.api.nvim_create_namespace("nvim_latex_delimiters")
 M.ns = ns
 M.delim_ns = delim_ns
 
--- Setup default subtle delimiter highlight (slightly transparent / dimmed like * or **)
-vim.api.nvim_set_hl(0, "NvimLatexDelimiter", {
-  fg = "#6e7681",
-  default = true,
-})
+--- Setup delimiter highlights using standard Neovim highlight links
+--- Portable across any colorscheme (Catppuccin, TokyoNight, Gruvbox, GitHub, etc.)
+function M.setup_highlights()
+  local target_hl = config.options.delimiter_hl or "Conceal"
+
+  -- Link NvimLatexDelimiter to standard Conceal (or user's choice) by default
+  vim.api.nvim_set_hl(0, "NvimLatexDelimiter", {
+    link = target_hl,
+    default = true,
+  })
+
+  -- Fallback check: if Conceal doesn't specify an fg in this theme, link to Comment
+  local hl = vim.api.nvim_get_hl(0, { name = "NvimLatexDelimiter", link = false })
+  if not hl or (not hl.fg and not hl.link) then
+    vim.api.nvim_set_hl(0, "NvimLatexDelimiter", {
+      link = "Comment",
+      default = true,
+    })
+  end
+end
+
+M.setup_highlights()
 
 -- Buffer state map: bufnr -> { formulas = { [key] = formula_record }, active_line = nil, timer = nil }
 local state = {}
@@ -213,8 +230,18 @@ local function render_item(bufnr, item)
     end
 
     local cell_w, cell_h = terminal.get_cell_size()
-    local cols = math.max(1, math.ceil(pw / cell_w))
-    local rows = is_inline and 1 or math.max(1, math.ceil(ph / cell_h))
+    local aspect = pw / ph
+    local cell_aspect = cell_h / cell_w -- cell height-to-width ratio (typically ~2.0)
+
+    -- Calculate exact column and row grid dimensions preserving aspect ratio without extra side padding
+    local cols, rows
+    if is_inline then
+      rows = 1
+      cols = math.max(1, math.floor(aspect * rows * cell_aspect + 0.5))
+    else
+      rows = math.max(1, math.min(10, math.floor(ph / cell_h + 0.5)))
+      cols = math.max(1, math.floor(aspect * rows * cell_aspect + 0.5))
+    end
 
     local image_id = terminal.next_image_id()
     local ok = terminal.transmit_and_place(image_id, png_path, cols, rows)
