@@ -303,6 +303,77 @@ function M.on_cursor_moved(bufnr)
       end
     end
   end
+
+  M.update_wrap_mode(win, bufnr)
+end
+
+--- Update window line-wrapping mode based on textual (expanded) vs rendered mode
+--- In textual mode (cursor on line with raw formula), wraps line for editing.
+--- In rendered mode, disables wrapping if rendered text comfortably fits on screen.
+---@param win number
+---@param bufnr number
+function M.update_wrap_mode(win, bufnr)
+  if not config.options.auto_wrap_mode or not vim.api.nvim_win_is_valid(win) then
+    return
+  end
+
+  local buf_state = state[bufnr]
+  if not buf_state then
+    return
+  end
+
+  if buf_state.initial_wrap == nil then
+    buf_state.initial_wrap = vim.wo[win].wrap
+  end
+
+  -- If user originally had nowrap, preserve their setting
+  if buf_state.initial_wrap == false then
+    return
+  end
+
+  local cur_line = vim.api.nvim_win_get_cursor(win)[1] - 1
+  local is_textual = false
+
+  for _, f in pairs(buf_state.formulas) do
+    if f.range[1] <= cur_line and f.range[3] >= cur_line and f.is_expanded then
+      is_textual = true
+      break
+    end
+  end
+
+  if is_textual then
+    if not vim.wo[win].wrap then
+      vim.wo[win].wrap = true
+    end
+  else
+    local wininfo = vim.fn.getwininfo(win)[1]
+    local text_width = wininfo and (wininfo.width - wininfo.textoff) or (vim.api.nvim_win_get_width(win) - 4)
+    local needs_wrap = false
+    if text_width > 0 then
+      for _, f in pairs(buf_state.formulas) do
+        if not f.is_expanded and f.cols then
+          local lines = vim.api.nvim_buf_get_lines(bufnr, f.range[1], f.range[1] + 1, false)
+          local line_str = lines[1] or ""
+          local raw_len = f.range[4] - f.range[2]
+          local rendered_len = #line_str - raw_len + f.cols + (f.pad or 0)
+          if rendered_len > text_width then
+            needs_wrap = true
+            break
+          end
+        end
+      end
+    end
+
+    if needs_wrap then
+      if not vim.wo[win].wrap then
+        vim.wo[win].wrap = true
+      end
+    else
+      if vim.wo[win].wrap then
+        vim.wo[win].wrap = false
+      end
+    end
+  end
 end
 
 --- Render or update a parsed formula
@@ -382,11 +453,15 @@ local function render_item(bufnr, item)
       local s_line, e_line = get_active_selection_range(win)
       if formula_touches_range(f_record, s_line, e_line) and config.options.expand_on_cursor then
         expand_formula(bufnr, f_record)
+        M.update_wrap_mode(win, bufnr)
         return
       end
     end
 
     collapse_formula(bufnr, f_record)
+    if vim.api.nvim_win_get_buf(win) == bufnr then
+      M.update_wrap_mode(win, bufnr)
+    end
   end)
 end
 
@@ -484,6 +559,11 @@ function M.clean_buffer(bufnr)
     if f.id then
       terminal.delete_image(f.id)
     end
+  end
+
+  local win = vim.api.nvim_get_current_win()
+  if vim.api.nvim_win_is_valid(win) and buf_state.initial_wrap ~= nil then
+    vim.wo[win].wrap = buf_state.initial_wrap
   end
 
   state[bufnr] = nil

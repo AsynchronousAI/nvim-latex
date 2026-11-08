@@ -16,8 +16,8 @@ M.defaults = {
     block = { "$$", "$$" },
   },
 
-  -- Base font size (in pixels) for RaTeX rendering (18-20 crisply matches standard terminal text)
-  font_size = 18,
+  -- Base font size (in pixels) for RaTeX rendering (24 gives prominent, highly legible glyphs)
+  font_size = 24,
 
   -- Render scale factor / Device Pixel Ratio (e.g. 2.0 or 3.0 for ultra-crisp Retina / 4K rendering)
   dpr = 2.0,
@@ -34,6 +34,10 @@ M.defaults = {
 
   -- Expand back to raw text when cursor enters the line or visual selection
   expand_on_cursor = true,
+
+  -- Dynamically adapt window line-wrap based on textual (expanded) vs rendered mode
+  -- Prevents phantom wrapped blank lines when rendered latex comfortably fits on screen
+  auto_wrap_mode = true,
 
   -- Default cell dimensions (pixels) fallback when terminal ioctl is unavailable
   cell_width = 9,
