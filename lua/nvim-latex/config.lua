@@ -5,13 +5,9 @@ M.defaults = {
   -- If nil, checks vim.fn.exepath("ratex"), vim.fn.exepath("render"), or plugin's bin/render.
   bin = nil,
 
-  -- Supported filetypes to auto-attach
+  -- Supported filetypes to auto-attach ("*" matches all code and markdown files)
   filetypes = {
-    "c",
-    "cpp",
-    "rust",
-    "python",
-    "markdown",
+    "*",
   },
 
   -- Math delimiters
@@ -36,7 +32,7 @@ M.defaults = {
   -- Compatible with any colorscheme (Catppuccin, TokyoNight, Gruvbox, GitHub, etc.)
   delimiter_hl = "Conceal",
 
-  -- Expand back to raw text when cursor enters the line
+  -- Expand back to raw text when cursor enters the line or visual selection
   expand_on_cursor = true,
 
   -- Default cell dimensions (pixels) fallback when terminal ioctl is unavailable

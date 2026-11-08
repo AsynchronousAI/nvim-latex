@@ -22,16 +22,44 @@ local is_enabled = true
 local augroup = vim.api.nvim_create_augroup("nvim_latex", { clear = true })
 local attached_buffers = {}
 
---- Check if filetype is supported
+--- Check if buffer should be attached
+--- Supports "*" for all code/text files, and filters out UI/tooling popups
 ---@param bufnr number
 ---@return boolean
 local function is_supported_ft(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return false
+  end
+
+  -- Only attach to normal file buffers
+  local buftype = vim.bo[bufnr].buftype
+  if buftype ~= "" then
+    return false
+  end
+
   local ft = vim.bo[bufnr].filetype
+  local ignored_ft = {
+    [""] = true,
+    ["TelescopePrompt"] = true,
+    ["lazy"] = true,
+    ["help"] = true,
+    ["qf"] = true,
+    ["gitcommit"] = true,
+    ["NvimTree"] = true,
+    ["neo-tree"] = true,
+    ["notify"] = true,
+  }
+  if ignored_ft[ft] then
+    return false
+  end
+
+  -- Check user filetype whitelist
   for _, target in ipairs(config.options.filetypes) do
-    if ft == target then
+    if target == "*" or target == ft then
       return true
     end
   end
+
   return false
 end
 
@@ -113,6 +141,8 @@ function M.setup(opts)
     vim.notify("nvim-latex: Terminal does not appear to support Kitty graphics protocol.", vim.log.levels.WARN)
   end
 
+  render.setup_highlights()
+
   -- Autocommands for lifecycle
   vim.api.nvim_create_autocmd({ "BufEnter", "BufWinEnter", "FileType" }, {
     group = augroup,
@@ -125,7 +155,8 @@ function M.setup(opts)
     end,
   })
 
-  vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
+  -- Cursor and visual selection motion
+  vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI", "CursorHold", "CursorHoldI" }, {
     group = augroup,
     callback = function(args)
       if is_enabled and attached_buffers[args.buf] then
@@ -134,6 +165,30 @@ function M.setup(opts)
     end,
   })
 
+  -- Visual mode changes (v, V, <C-v>, normal mode exit)
+  vim.api.nvim_create_autocmd({ "ModeChanged" }, {
+    group = augroup,
+    pattern = "*:*",
+    callback = function(args)
+      if is_enabled and attached_buffers[args.buf] then
+        render.on_cursor_moved(args.buf)
+      end
+    end,
+  })
+
+  -- Window / Terminal resize (recalculate clean line wrapping)
+  vim.api.nvim_create_autocmd({ "VimResized", "WinResized" }, {
+    group = augroup,
+    callback = function()
+      if is_enabled then
+        for b, _ in pairs(attached_buffers) do
+          render.refresh_buffer(b)
+        end
+      end
+    end,
+  })
+
+  -- Buffer edits
   vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
     group = augroup,
     callback = function(args)
@@ -143,6 +198,7 @@ function M.setup(opts)
     end,
   })
 
+  -- Buffer cleanup
   vim.api.nvim_create_autocmd({ "BufLeave", "BufUnload" }, {
     group = augroup,
     callback = function(args)
@@ -152,8 +208,7 @@ function M.setup(opts)
     end,
   })
 
-  render.setup_highlights()
-
+  -- ColorScheme adaptation
   vim.api.nvim_create_autocmd("ColorScheme", {
     group = augroup,
     callback = function()

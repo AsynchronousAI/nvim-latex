@@ -34,15 +34,103 @@ end
 
 M.setup_highlights()
 
--- Buffer state map: bufnr -> { formulas = { [key] = formula_record }, active_line = nil, timer = nil }
+-- Buffer state map: bufnr -> { formulas = { [key] = formula_record }, active_range = { -1, -1 }, timer = nil }
 local state = {}
 
---- Check if a formula spans across a specific buffer line
+--- Get active line range affected by cursor or visual selection
+--- Supports:
+---   - Normal mode (single cursor line)
+---   - Insert mode (single cursor line)
+---   - Visual characterwise ('v')
+---   - Visual linewise ('V')
+---   - Visual blockwise ('\22' / Ctrl-V)
+---   - Select modes ('s', 'S', Ctrl-S)
+---@param win number
+---@return number start_line 0-indexed
+---@return number end_line 0-indexed
+local function get_active_selection_range(win)
+  local mode_info = vim.api.nvim_get_mode()
+  local mode = mode_info.mode
+  local cur_line = vim.api.nvim_win_get_cursor(win)[1] - 1
+
+  -- Visual mode: 'v' (118), 'V' (86), Ctrl-V (22), 's' (115), 'S' (83), Ctrl-S (19)
+  local b = mode:byte(1) or 0
+  if b == 118 or b == 86 or b == 22 or b == 115 or b == 83 or b == 19 then
+    local v_line = vim.fn.line("v") - 1
+    local s_line = math.min(cur_line, v_line)
+    local e_line = math.max(cur_line, v_line)
+    return s_line, e_line
+  end
+
+  return cur_line, cur_line
+end
+
+--- Calculate visual column offset on a line before col_idx, accounting for collapsed formulas
+--- Automatically determines if formula would wrap across lines and returns spaces needed
+--- to push the formula cleanly to the beginning of the next screen line
+---@param bufnr number
+---@param row number 0-indexed line number
+---@param col_idx number 0-indexed byte column
+---@param formula_cols number Width of the formula in screen cells
+---@param text_width number Available window columns
+---@return number pad Number of spaces to pad before the formula to prevent splitting across lines
+local function get_wrap_pad(bufnr, row, col_idx, formula_cols, text_width)
+  if text_width <= 0 or formula_cols > text_width then
+    return 0
+  end
+
+  local lines = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)
+  local line = lines[1] or ""
+  local prefix = line:sub(1, col_idx)
+
+  local buf_state = state[bufnr]
+  local visual_w = 0
+
+  if not buf_state then
+    visual_w = vim.fn.strdisplaywidth(prefix)
+  else
+    -- Account for any collapsed formulas that appear earlier on this same line
+    local cur_byte = 1
+    while cur_byte <= #prefix do
+      local matched_f = nil
+      for _, other in pairs(buf_state.formulas) do
+        if other.range[1] == row and other.range[2] == cur_byte - 1 and other.range[4] <= col_idx then
+          matched_f = other
+          break
+        end
+      end
+
+      if matched_f and not matched_f.is_expanded and matched_f.cols then
+        visual_w = visual_w + (matched_f.pad or 0) + matched_f.cols
+        cur_byte = matched_f.range[4] + 1
+      else
+        local ch = prefix:sub(cur_byte, cur_byte)
+        if ch == "\t" then
+          local ts = vim.bo[bufnr].tabstop or 8
+          visual_w = visual_w + (ts - (visual_w % ts))
+        else
+          visual_w = visual_w + vim.fn.strdisplaywidth(ch)
+        end
+        cur_byte = cur_byte + 1
+      end
+    end
+  end
+
+  local col_on_screen = visual_w % text_width
+  if col_on_screen > 0 and (col_on_screen + formula_cols > text_width) then
+    return text_width - col_on_screen
+  end
+
+  return 0
+end
+
+--- Check if a formula spans across or overlaps a specific line range
 ---@param f table Formula record
----@param line number 0-indexed line number
+---@param s_line number 0-indexed start line
+---@param e_line number 0-indexed end line
 ---@return boolean
-local function formula_touches_line(f, line)
-  return line >= f.range[1] and line <= f.range[3]
+local function formula_touches_range(f, s_line, e_line)
+  return f.range[3] >= s_line and f.range[1] <= e_line
 end
 
 --- Apply subtle delimiter highlight on $ or $$ when expanded
@@ -124,11 +212,27 @@ local function collapse_formula(bufnr, f)
   end
 
   if f.type == "inline" then
+    local pad = 0
+    local win = vim.api.nvim_get_current_win()
+    if vim.api.nvim_win_is_valid(win) and vim.wo[win].wrap then
+      local wininfo = vim.fn.getwininfo(win)[1]
+      local text_width = wininfo and (wininfo.width - wininfo.textoff) or (vim.api.nvim_win_get_width(win) - 4)
+      local cols = f.cols or (f.placeholder_lines and #f.placeholder_lines[1]) or 1
+      pad = get_wrap_pad(bufnr, f.range[1], f.range[2], cols, text_width)
+    end
+    f.pad = pad
+
+    local virt_text = {}
+    if pad > 0 then
+      table.insert(virt_text, { string.rep(" ", pad), "Normal" })
+    end
+    table.insert(virt_text, { f.placeholder_lines[1], f.hl_group })
+
     local ok, mark_id = pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, f.range[1], f.range[2], {
       end_row = f.range[3],
       end_col = f.range[4],
       conceal = "",
-      virt_text = { { f.placeholder_lines[1], f.hl_group } },
+      virt_text = virt_text,
       virt_text_pos = "inline",
       priority = 4096,
     })
@@ -165,13 +269,14 @@ local function expand_formula(bufnr, f)
     pcall(vim.api.nvim_buf_del_extmark, bufnr, ns, f.extmark_id)
     f.extmark_id = nil
   end
+  f.pad = 0
   f.is_expanded = true
 
   -- Highlight $ delimiters with subtle, slightly transparent color
   apply_delimiter_highlights(bufnr, f)
 end
 
---- Check cursor line and expand/collapse formulas on a per-line basis
+--- Check cursor position or visual selection and expand/collapse formulas
 ---@param bufnr number
 function M.on_cursor_moved(bufnr)
   local buf_state = state[bufnr]
@@ -184,17 +289,11 @@ function M.on_cursor_moved(bufnr)
     return
   end
 
-  local cur_line = vim.api.nvim_win_get_cursor(win)[1] - 1
+  local s_line, e_line = get_active_selection_range(win)
 
-  -- If cursor line hasn't changed, no update needed
-  if buf_state.active_line == cur_line then
-    return
-  end
-  buf_state.active_line = cur_line
-
-  -- Any formula on the current cursor line expands to normal text; all other lines collapse
+  -- Any formula overlapping the active line / visual selection expands; all other lines collapse
   for _, f in pairs(buf_state.formulas) do
-    if formula_touches_line(f, cur_line) then
+    if formula_touches_range(f, s_line, e_line) then
       if not f.is_expanded then
         expand_formula(bufnr, f)
       end
@@ -257,6 +356,9 @@ local function render_item(bufnr, item)
       formula = item.formula,
       type = item.type,
       range = item.range,
+      cols = cols,
+      rows = rows,
+      pad = 0,
       placeholder_lines = lines,
       hl_group = hl_group,
       extmark_id = nil,
@@ -266,11 +368,11 @@ local function render_item(bufnr, item)
 
     buf_state.formulas[key] = f_record
 
-    -- Check if cursor is currently on this line
+    -- Check if cursor / visual selection is currently overlapping this formula
     local win = vim.api.nvim_get_current_win()
     if vim.api.nvim_win_get_buf(win) == bufnr then
-      local cur_line = vim.api.nvim_win_get_cursor(win)[1] - 1
-      if formula_touches_line(f_record, cur_line) and config.options.expand_on_cursor then
+      local s_line, e_line = get_active_selection_range(win)
+      if formula_touches_range(f_record, s_line, e_line) and config.options.expand_on_cursor then
         expand_formula(bufnr, f_record)
         return
       end
@@ -289,7 +391,7 @@ function M.refresh_buffer(bufnr)
 
   local buf_state = state[bufnr]
   if not buf_state then
-    state[bufnr] = { formulas = {}, active_line = nil }
+    state[bufnr] = { formulas = {}, active_range = { -1, -1 } }
     buf_state = state[bufnr]
   end
 
@@ -327,7 +429,7 @@ end
 function M.debounced_refresh(bufnr)
   local buf_state = state[bufnr]
   if not buf_state then
-    state[bufnr] = { formulas = {}, active_line = nil }
+    state[bufnr] = { formulas = {}, active_range = { -1, -1 } }
     buf_state = state[bufnr]
   end
 

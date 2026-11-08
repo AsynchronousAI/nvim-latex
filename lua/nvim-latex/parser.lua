@@ -44,7 +44,7 @@ local function extract_from_comment(text, sr, sc, bufnr)
     init = e + 1
   end
 
-  -- 2. Inline math: $ ... $ (avoiding $$)
+  -- 2. Inline math: $ ... $ (avoiding $$ and escaped \$)
   init = 1
   while true do
     local s, e, content = text:find("%$([^$\n]+)%$", init)
@@ -71,40 +71,27 @@ local function extract_from_comment(text, sr, sc, bufnr)
   return items
 end
 
---- Parse code files using built-in Tree-sitter comment captures
+--- Universal comment parser using built-in Tree-sitter for any language
 ---@param bufnr number
 ---@return table[] items List of formula records
 function M.parse_comments_treesitter(bufnr)
-  local ft = vim.bo[bufnr].filetype
-  -- Map filetypes if necessary (e.g. cpp can fall back to c parser)
-  local lang = ft
-  if lang == "cpp" then
-    lang = "cpp"
-  end
-
-  local ok, parser = pcall(vim.treesitter.get_parser, bufnr, lang)
-  if not ok or not parser then
-    -- Try fallback to 'c' parser for C/C++
-    if ft == "cpp" or ft == "c" then
-      ok, parser = pcall(vim.treesitter.get_parser, bufnr, "c")
-    end
-  end
-
+  local ok, parser = pcall(vim.treesitter.get_parser, bufnr)
   if not ok or not parser then
     return M.parse_comments_regex(bufnr)
   end
 
   local trees = parser:parse()
   if not trees or #trees == 0 then
-    return {}
+    return M.parse_comments_regex(bufnr)
   end
 
   local root = trees[1]:root()
-  local query_str = "((comment) @comment)"
-  local q_ok, query = pcall(vim.treesitter.query.parse, lang, query_str)
+  local lang = parser:lang()
+
+  -- Try standard query for this grammar
+  local q_ok, query = pcall(vim.treesitter.query.parse, lang, "((comment) @comment)")
   if not q_ok or not query then
-    -- Try c query
-    q_ok, query = pcall(vim.treesitter.query.parse, "c", query_str)
+    q_ok, query = pcall(vim.treesitter.query.parse, lang, "([(comment) (line_comment) (block_comment)] @comment)")
   end
 
   if not q_ok or not query then
@@ -126,20 +113,71 @@ function M.parse_comments_treesitter(bufnr)
     end
   end
 
+  -- If Tree-sitter found no comment formulas, fall back to universal regex parser
+  if #all_items == 0 then
+    return M.parse_comments_regex(bufnr)
+  end
+
   return all_items
 end
 
---- Fallback line-by-line scanner for comments if treesitter is not ready
+--- Universal regex comment parser across all programming languages
+--- Supports:
+---   -- (Lua, SQL, Haskell)
+---   // (C, C++, Rust, Go, JS, TS, Java, Zig)
+---   #  (Python, Bash, Ruby, YAML, TOML)
+---   ;  (Lisp, Assembly, Clojure)
+---   /* ... */, --[[ ... ]], <!-- ... -->
 ---@param bufnr number
 ---@return table[] items
 function M.parse_comments_regex(bufnr)
+  local ft = vim.bo[bufnr].filetype
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local all_items = {}
 
+  local cs = vim.bo[bufnr].commentstring or ""
+  local cs_prefix = cs:match("^%s*(%S+)%s*%%s")
+
   for r = 0, #lines - 1 do
     local line = lines[r + 1]
-    -- Single line comments //
-    local comment_start = line:find("//")
+    local comment_start = nil
+
+    -- 0. Check buffer commentstring leader if present
+    if cs_prefix and cs_prefix ~= "" then
+      local s_cs = line:find(cs_prefix, 1, true)
+      if s_cs and (not comment_start or s_cs < comment_start) then
+        comment_start = s_cs
+      end
+    end
+
+    -- 1. Check Lua / SQL / Haskell '--'
+    local s_lua = line:find("%-%-")
+    if s_lua and (not comment_start or s_lua < comment_start) then
+      comment_start = s_lua
+    end
+
+    -- 2. Check C / C++ / Rust / Go / JS / TS '//'
+    local s_c = line:find("//")
+    if s_c and (not comment_start or s_c < comment_start) then
+      comment_start = s_c
+    end
+
+    -- 3. Check Python / Shell / Ruby '#' (exclude C/C++ preprocessor directives)
+    if ft ~= "c" and ft ~= "cpp" then
+      local s_hash = line:find("#")
+      if s_hash and (not comment_start or s_hash < comment_start) then
+        comment_start = s_hash
+      end
+    end
+
+    -- 4. Check Lisp / Assembly / INI ';'
+    if ft == "lisp" or ft == "clojure" or ft == "asm" or ft == "ini" then
+      local s_semi = line:find(";")
+      if s_semi and (not comment_start or s_semi < comment_start) then
+        comment_start = s_semi
+      end
+    end
+
     if comment_start then
       local comment_text = line:sub(comment_start)
       local items = extract_from_comment(comment_text, r, comment_start - 1, bufnr)
@@ -171,28 +209,50 @@ function M.parse_markdown(bufnr)
     elseif in_code_fence then
       r = r + 1
     else
-      -- Multiline block $$ ... $$
-      if trimmed == "$$" or (trimmed:sub(1, 2) == "$$" and trimmed:sub(-2) ~= "$$") then
+      -- Check for multiline block $$ ... $$
+      -- Matches if line has $$ and does NOT close it on the same line
+      local s_open, e_open = line:find("%$%$")
+      if s_open and not line:find("%$%$", e_open + 1) then
         local block_start_r = r
+        local start_col = s_open - 1
         local block_lines = {}
+
+        local first_rest = vim.trim(line:sub(e_open + 1))
+        if first_rest ~= "" then
+          table.insert(block_lines, first_rest)
+        end
+
+        local block_end_r = nil
+        local end_col = nil
+
         r = r + 1
         while r < #lines do
           local cur_line = lines[r + 1]
-          if vim.trim(cur_line):sub(1, 2) == "$$" then
+          local close_s, close_e = cur_line:find("%$%$")
+          if close_s then
+            local before_close = vim.trim(cur_line:sub(1, close_s - 1))
+            if before_close ~= "" then
+              table.insert(block_lines, before_close)
+            end
+            block_end_r = r
+            end_col = close_e
             break
+          else
+            table.insert(block_lines, cur_line)
+            r = r + 1
           end
-          table.insert(block_lines, cur_line)
-          r = r + 1
         end
-        local block_end_r = math.min(r, #lines - 1)
-        local content = table.concat(block_lines, "\n")
-        table.insert(items, {
-          bufnr = bufnr,
-          type = "block",
-          formula = content,
-          range = { block_start_r, 0, block_end_r, #lines[block_end_r + 1] },
-          is_comment = false,
-        })
+
+        if block_end_r and end_col then
+          local content = table.concat(block_lines, "\n")
+          table.insert(items, {
+            bufnr = bufnr,
+            type = "block",
+            formula = content,
+            range = { block_start_r, start_col, block_end_r, end_col },
+            is_comment = false,
+          })
+        end
         r = r + 1
       else
         -- Single-line block $$ ... $$
@@ -244,7 +304,7 @@ function M.parse_markdown(bufnr)
   return items
 end
 
---- Scan a buffer based on filetype
+--- Scan a buffer based on filetype (markdown vs code comments)
 ---@param bufnr number
 ---@return table[] items List of formula items
 function M.scan_buffer(bufnr)
