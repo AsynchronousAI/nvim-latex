@@ -135,9 +135,6 @@ function M.update_line_wrapping(bufnr, win)
     return
   end
 
-  -- Update wrap mode based on rendered line widths
-  M.update_wrap_mode(win, bufnr)
-
   local is_wrapping = vim.wo[win].wrap
   local wininfo = vim.fn.getwininfo(win)[1]
   local text_width = wininfo and (wininfo.width - wininfo.textoff) or (vim.api.nvim_win_get_width(win) - 4)
@@ -210,7 +207,7 @@ local function apply_delimiter_highlights(bufnr, f)
   end
   f.delim_extmark_ids = {}
 
-  local delim_len = f.type == "block" and 2 or 1
+  local delim_len = (f.raw and f.raw:sub(1, 2) == "$$") and 2 or 1
 
   -- Opening delimiter
   local ok1, id1 = pcall(vim.api.nvim_buf_set_extmark, bufnr, delim_ns, f.range[1], f.range[2], {
@@ -279,44 +276,24 @@ collapse_formula = function(bufnr, f)
     return
   end
 
-  if f.type == "inline" then
-    local pad = f.pad or 0
-    local virt_text = {}
-    if pad > 0 then
-      table.insert(virt_text, { string.rep(" ", pad), "Normal" })
-    end
-    table.insert(virt_text, { f.placeholder_lines[1], f.hl_group })
+  local pad = f.pad or 0
+  local virt_text = {}
+  if pad > 0 then
+    table.insert(virt_text, { string.rep(" ", pad), "Normal" })
+  end
+  table.insert(virt_text, { f.placeholder_lines[1], f.hl_group })
 
-    local ok, mark_id = pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, f.range[1], f.range[2], {
-      end_row = f.range[3],
-      end_col = f.range[4],
-      conceal = "",
-      virt_text = virt_text,
-      virt_text_pos = "inline",
-      priority = 4096,
-    })
-    if ok then
-      f.extmark_id = mark_id
-      f.is_expanded = false
-    end
-  else
-    -- Block math
-    local virt_lines = {}
-    for _, line_str in ipairs(f.placeholder_lines) do
-      table.insert(virt_lines, { { line_str, f.hl_group } })
-    end
-
-    local ok, mark_id = pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, f.range[1], f.range[2], {
-      end_row = f.range[3],
-      end_col = f.range[4],
-      conceal = "",
-      virt_lines = virt_lines,
-      priority = 4096,
-    })
-    if ok then
-      f.extmark_id = mark_id
-      f.is_expanded = false
-    end
+  local ok, mark_id = pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, f.range[1], f.range[2], {
+    end_row = f.range[3],
+    end_col = f.range[4],
+    conceal = "",
+    virt_text = virt_text,
+    virt_text_pos = "inline",
+    priority = 4096,
+  })
+  if ok then
+    f.extmark_id = mark_id
+    f.is_expanded = false
   end
 end
 
@@ -370,75 +347,6 @@ function M.on_cursor_moved(bufnr)
   M.update_line_wrapping(bufnr, win)
 end
 
---- Update window line-wrapping mode based on textual (expanded) vs rendered mode
---- In textual mode (cursor on line with raw formula), wraps line for editing.
---- In rendered mode, disables wrapping if rendered text comfortably fits on screen.
----@param win number
----@param bufnr number
-function M.update_wrap_mode(win, bufnr)
-  if not config.options.auto_wrap_mode or not vim.api.nvim_win_is_valid(win) then
-    return
-  end
-
-  local buf_state = state[bufnr]
-  if not buf_state then
-    return
-  end
-
-  if buf_state.initial_wrap == nil then
-    buf_state.initial_wrap = vim.wo[win].wrap
-  end
-
-  -- If user originally had nowrap, preserve their setting
-  if buf_state.initial_wrap == false then
-    return
-  end
-
-  local cur_line = vim.api.nvim_win_get_cursor(win)[1] - 1
-  local is_textual = false
-
-  for _, f in pairs(buf_state.formulas) do
-    if f.range[1] <= cur_line and f.range[3] >= cur_line and f.is_expanded then
-      is_textual = true
-      break
-    end
-  end
-
-  if is_textual then
-    if not vim.wo[win].wrap then
-      vim.wo[win].wrap = true
-    end
-  else
-    local wininfo = vim.fn.getwininfo(win)[1]
-    local text_width = wininfo and (wininfo.width - wininfo.textoff) or (vim.api.nvim_win_get_width(win) - 4)
-    local needs_wrap = false
-    if text_width > 0 then
-      local checked_rows = {}
-      for _, f in pairs(buf_state.formulas) do
-        local r = f.range[1]
-        if not checked_rows[r] then
-          checked_rows[r] = true
-          local w = M.get_line_rendered_width(bufnr, r)
-          if w > text_width then
-            needs_wrap = true
-            break
-          end
-        end
-      end
-    end
-
-    if needs_wrap then
-      if not vim.wo[win].wrap then
-        vim.wo[win].wrap = true
-      end
-    else
-      if vim.wo[win].wrap then
-        vim.wo[win].wrap = false
-      end
-    end
-  end
-end
-
 --- Render or update a parsed formula
 ---@param bufnr number
 ---@param item table Item parsed from buffer
@@ -480,25 +388,15 @@ local function render_item(bufnr, item)
     -- In Kitty graphics protocol, terminal emulators scale Unicode placeholder images to fit the allocated columns.
     -- By transparently padding the canvas to exact cell multiples (cols * cw, rows * ch), terminal scaling factor
     -- is strictly 1.000, ensuring every single glyph renders at its exact natural font size without distortion.
-    local cols, rows
+    -- Strictly 1 row high (inline math)
+    local rows = 1
     local scale = 1.0
-    if is_inline then
-      rows = 1
-      local max_height = rows * ch
-      if ph > max_height then
-        scale = max_height / ph
-      end
-      local display_width = pw * scale
-      cols = math.max(1, math.ceil((display_width - 2) / cw))
-    else
-      rows = math.max(1, math.min(16, math.ceil(ph / ch)))
-      local max_height = rows * ch
-      if ph > max_height then
-        scale = max_height / ph
-      end
-      local display_width = pw * scale
-      cols = math.max(1, math.ceil((display_width - 2) / cw))
+    local max_height = rows * ch
+    if ph > max_height then
+      scale = max_height / ph
     end
+    local display_width = pw * scale
+    local cols = math.max(1, math.ceil((display_width - 2) / cw))
 
     local target_w = cols * cw
     local target_h = rows * ch

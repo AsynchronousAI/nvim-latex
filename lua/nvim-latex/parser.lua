@@ -16,30 +16,32 @@ local function index_to_pos(text, sr, sc, idx)
   return cur_row, cur_col
 end
 
---- Extract LaTeX formulas from a comment string
+--- Extract LaTeX formulas from a comment string (strictly single-line inline math)
 local function extract_from_comment(text, sr, sc, bufnr)
   local items = {}
   local occupied = {}
 
-  -- 1. Multiblock math: $$ ... $$
+  -- 1. Single-line $$ ... $$
   local init = 1
   while true do
-    local s, e, content = text:find("%$%$%s*(.-)%s*%$%$", init)
+    local s, e, content = text:find("%$%$%s*([^$\n]-)%s*%$%$", init)
     if not s then
       break
     end
     local start_r, start_c = index_to_pos(text, sr, sc, s)
     local end_r, end_c = index_to_pos(text, sr, sc, e + 1)
-    table.insert(items, {
-      bufnr = bufnr,
-      type = "block",
-      formula = content,
-      range = { start_r, start_c, end_r, end_c },
-      is_comment = true,
-      raw = text:sub(s, e),
-    })
-    for i = s, e do
-      occupied[i] = true
+    if start_r == end_r then
+      table.insert(items, {
+        bufnr = bufnr,
+        type = "inline",
+        formula = content,
+        range = { start_r, start_c, end_r, end_c },
+        is_comment = true,
+        raw = text:sub(s, e),
+      })
+      for i = s, e do
+        occupied[i] = true
+      end
     end
     init = e + 1
   end
@@ -56,14 +58,16 @@ local function extract_from_comment(text, sr, sc, bufnr)
     if char_before ~= "$" and char_after ~= "$" and char_before ~= "\\" and not occupied[s] then
       local start_r, start_c = index_to_pos(text, sr, sc, s)
       local end_r, end_c = index_to_pos(text, sr, sc, e + 1)
-      table.insert(items, {
-        bufnr = bufnr,
-        type = "inline",
-        formula = content,
-        range = { start_r, start_c, end_r, end_c },
-        is_comment = true,
-        raw = text:sub(s, e),
-      })
+      if start_r == end_r then
+        table.insert(items, {
+          bufnr = bufnr,
+          type = "inline",
+          formula = content,
+          range = { start_r, start_c, end_r, end_c },
+          is_comment = true,
+          raw = text:sub(s, e),
+        })
+      end
     end
     init = e + 1
   end
@@ -195,7 +199,7 @@ function M.parse_comments_regex(bufnr)
   return all_items
 end
 
---- Parse Markdown files
+--- Parse Markdown files (strictly single-line inline math)
 ---@param bufnr number
 ---@return table[] items
 function M.parse_markdown(bufnr)
@@ -203,105 +207,54 @@ function M.parse_markdown(bufnr)
   local in_code_fence = false
   local items = {}
 
-  local r = 0
-  while r < #lines do
+  for r = 0, #lines - 1 do
     local line = lines[r + 1]
     local trimmed = vim.trim(line)
 
     if trimmed:sub(1, 3) == "```" or trimmed:sub(1, 3) == "~~~" then
       in_code_fence = not in_code_fence
-      r = r + 1
-    elseif in_code_fence then
-      r = r + 1
-    else
-      -- Check for multiline block $$ ... $$
-      -- Matches if line has $$ and does NOT close it on the same line
-      local s_open, e_open = line:find("%$%$")
-      if s_open and not line:find("%$%$", e_open + 1) then
-        local block_start_r = r
-        local start_col = s_open - 1
-        local block_lines = {}
+    elseif not in_code_fence then
+      local occupied = {}
 
-        local first_rest = vim.trim(line:sub(e_open + 1))
-        if first_rest ~= "" then
-          table.insert(block_lines, first_rest)
+      -- 1. Single-line $$ ... $$
+      local init = 1
+      while true do
+        local s, e, content = line:find("%$%$%s*([^$\n]-)%s*%$%$", init)
+        if not s then
+          break
         end
-
-        local block_end_r = nil
-        local end_col = nil
-
-        r = r + 1
-        while r < #lines do
-          local cur_line = lines[r + 1]
-          local close_s, close_e = cur_line:find("%$%$")
-          if close_s then
-            local before_close = vim.trim(cur_line:sub(1, close_s - 1))
-            if before_close ~= "" then
-              table.insert(block_lines, before_close)
-            end
-            block_end_r = r
-            end_col = close_e
-            break
-          else
-            table.insert(block_lines, cur_line)
-            r = r + 1
-          end
+        table.insert(items, {
+          bufnr = bufnr,
+          type = "inline",
+          formula = content,
+          range = { r, s - 1, r, e },
+          is_comment = false,
+        })
+        for i = s, e do
+          occupied[i] = true
         end
+        init = e + 1
+      end
 
-        if block_end_r and end_col then
-          local content = table.concat(block_lines, "\n")
+      -- 2. Inline $ ... $
+      init = 1
+      while true do
+        local s, e, content = line:find("%$([^$\n]+)%$", init)
+        if not s then
+          break
+        end
+        local char_before = s > 1 and line:sub(s - 1, s - 1) or ""
+        local char_after = e < #line and line:sub(e + 1, e + 1) or ""
+        if char_before ~= "$" and char_after ~= "$" and char_before ~= "\\" and not occupied[s] then
           table.insert(items, {
             bufnr = bufnr,
-            type = "block",
-            formula = content,
-            range = { block_start_r, start_col, block_end_r, end_col },
-            is_comment = false,
-          })
-        end
-        r = r + 1
-      else
-        -- Single-line block $$ ... $$
-        local init = 1
-        local occupied = {}
-        while true do
-          local s, e, content = line:find("%$%$%s*(.-)%s*%$%$", init)
-          if not s then
-            break
-          end
-          table.insert(items, {
-            bufnr = bufnr,
-            type = "block",
+            type = "inline",
             formula = content,
             range = { r, s - 1, r, e },
             is_comment = false,
           })
-          for i = s, e do
-            occupied[i] = true
-          end
-          init = e + 1
         end
-
-        -- Inline $ ... $
-        init = 1
-        while true do
-          local s, e, content = line:find("%$([^$\n]+)%$", init)
-          if not s then
-            break
-          end
-          local char_before = s > 1 and line:sub(s - 1, s - 1) or ""
-          local char_after = e < #line and line:sub(e + 1, e + 1) or ""
-          if char_before ~= "$" and char_after ~= "$" and char_before ~= "\\" and not occupied[s] then
-            table.insert(items, {
-              bufnr = bufnr,
-              type = "inline",
-              formula = content,
-              range = { r, s - 1, r, e },
-              is_comment = false,
-            })
-          end
-          init = e + 1
-        end
-        r = r + 1
+        init = e + 1
       end
     end
   end

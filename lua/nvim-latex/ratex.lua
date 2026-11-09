@@ -4,7 +4,7 @@ local M = {}
 
 local _bin_cache = nil
 
---- Locate the RaTeX 'render' binary without any internet auto-download
+--- Locate the RaTeX 'ratex' or 'render' binary in system PATH or user config
 ---@return string|nil path Path to binary or nil if not found
 function M.find_binary()
   if _bin_cache and vim.fn.executable(_bin_cache) == 1 then
@@ -17,7 +17,7 @@ function M.find_binary()
     return _bin_cache
   end
 
-  -- 2. Check PATH for 'ratex' or 'render'
+  -- 2. Check system PATH for 'ratex' or 'render'
   local in_path = vim.fn.exepath("ratex")
   if in_path ~= "" then
     _bin_cache = in_path
@@ -27,15 +27,6 @@ function M.find_binary()
   in_path = vim.fn.exepath("render")
   if in_path ~= "" then
     _bin_cache = in_path
-    return _bin_cache
-  end
-
-  -- 3. Check plugin's own bin/ directory
-  local info = debug.getinfo(1, "S").source:sub(2)
-  local plugin_root = vim.fs.dirname(vim.fs.dirname(vim.fs.dirname(info)))
-  local local_bin = plugin_root .. "/bin/render"
-  if vim.fn.executable(local_bin) == 1 then
-    _bin_cache = local_bin
     return _bin_cache
   end
 
@@ -108,7 +99,7 @@ end
 function M.compile(formula, is_inline, is_comment, callback)
   local bin = M.find_binary()
   if not bin then
-    callback(nil, nil, nil, "RaTeX 'render' binary not found. Place it in PATH or plugin bin/render.")
+    callback(nil, nil, nil, "RaTeX binary ('ratex' or 'render') not found in PATH. Install ratex and ensure it is in your system PATH (see README.md).")
     return
   end
 

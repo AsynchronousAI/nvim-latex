@@ -1,8 +1,8 @@
 local M = {}
 
 M.defaults = {
-  -- Path to RaTeX 'render' binary.
-  -- If nil, checks vim.fn.exepath("ratex"), vim.fn.exepath("render"), or plugin's bin/render.
+  -- Path to RaTeX binary.
+  -- If nil, checks vim.fn.exepath("ratex") or vim.fn.exepath("render") in system PATH.
   bin = nil,
 
   -- Supported filetypes to auto-attach ("*" matches all code and markdown files)
@@ -10,10 +10,9 @@ M.defaults = {
     "*",
   },
 
-  -- Math delimiters
+  -- Math delimiters (inline $...$)
   delimiters = {
     inline = { "$", "$" },
-    block = { "$$", "$$" },
   },
 
   -- Base font size (in pixels) for RaTeX rendering (26 yields beautifully sized, prominent glyphs matching editor proportions)
@@ -34,10 +33,6 @@ M.defaults = {
 
   -- Expand back to raw text when cursor enters the line or visual selection
   expand_on_cursor = true,
-
-  -- Dynamically adapt window line-wrap based on textual (expanded) vs rendered mode
-  -- Prevents phantom wrapped blank lines when rendered latex comfortably fits on screen
-  auto_wrap_mode = true,
 
   -- Default cell dimensions (points) fallback when terminal ioctl is unavailable
   cell_width = 11,
