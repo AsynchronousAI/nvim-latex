@@ -30,6 +30,15 @@ function M.find_binary()
     return _bin_cache
   end
 
+  -- 3. Fallback: check plugin's own bin/ directory if present
+  local info = debug.getinfo(1, "S").source:sub(2)
+  local plugin_root = vim.fs.dirname(vim.fs.dirname(vim.fs.dirname(info)))
+  local local_bin = plugin_root .. "/bin/render"
+  if vim.fn.executable(local_bin) == 1 then
+    _bin_cache = local_bin
+    return _bin_cache
+  end
+
   return nil
 end
 
@@ -99,7 +108,8 @@ end
 function M.compile(formula, is_inline, is_comment, callback)
   local bin = M.find_binary()
   if not bin then
-    callback(nil, nil, nil, "RaTeX binary ('ratex' or 'render') not found in PATH. Install ratex and ensure it is in your system PATH (see README.md).")
+    vim.notify_once("nvim-latex: RaTeX binary ('ratex' or 'render') not found in PATH or plugin bin/render. Please install RaTeX (see README.md).", vim.log.levels.WARN)
+    callback(nil, nil, nil, "RaTeX binary not found")
     return
   end
 
