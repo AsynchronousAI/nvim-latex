@@ -136,8 +136,24 @@ function M.update_line_wrapping(bufnr, win)
   end
 
   local is_wrapping = vim.wo[win].wrap
+  if not is_wrapping then
+    -- When wrap is disabled, ensure no formula has padding
+    for _, f in pairs(buf_state.formulas) do
+      if f.pad and f.pad > 0 then
+        f.pad = 0
+        collapse_formula(bufnr, f)
+      end
+    end
+    return
+  end
+
   local wininfo = vim.fn.getwininfo(win)[1]
-  local text_width = wininfo and (wininfo.width - wininfo.textoff) or (vim.api.nvim_win_get_width(win) - 4)
+  if not wininfo then
+    return
+  end
+
+  local win_end_col = wininfo.wincol + wininfo.width - 1
+  local text_width = wininfo.width - wininfo.textoff
 
   -- Group rendered inline formulas by buffer line (row)
   local line_formulas = {}
@@ -160,14 +176,33 @@ function M.update_line_wrapping(bufnr, win)
 
       for _, f in ipairs(f_list) do
         local target_pad = 0
-        if is_wrapping and text_width > 0 and f.cols < text_width then
-          local text_segment = line_str:sub(cur_byte + 1, f.range[2])
-          cur_col = (cur_col + vim.fn.strdisplaywidth(text_segment)) % text_width
-          if cur_col > 0 and (cur_col + f.cols > text_width) then
-            target_pad = text_width - cur_col
-            cur_col = 0
+
+        -- Query Neovim screen layout engine for exact screen position
+        -- spos.col is 1-indexed screen column where extmark begins
+        local spos = vim.fn.screenpos(win, f.range[1] + 1, f.range[2] + 1)
+
+        if spos and spos.col > 0 then
+          -- Formula is visible in current window viewport
+          if text_width > 0 and f.cols <= text_width then
+            if spos.col + f.cols - 1 > win_end_col then
+              -- Overflows window edge: pad remaining cells to push formula cleanly to next row
+              target_pad = win_end_col - spos.col + 1
+            elseif f.pad and f.pad > 0 then
+              -- Formula fits on this row; clear any obsolete padding
+              target_pad = 0
+            end
           end
-          cur_col = (cur_col + f.cols) % text_width
+        else
+          -- Formula is off-screen: fallback to visual column tracking
+          if text_width > 0 and f.cols < text_width then
+            local text_segment = line_str:sub(cur_byte + 1, f.range[2])
+            cur_col = (cur_col + vim.fn.strdisplaywidth(text_segment)) % text_width
+            if cur_col > 0 and (cur_col + f.cols > text_width) then
+              target_pad = text_width - cur_col
+              cur_col = 0
+            end
+            cur_col = (cur_col + f.cols) % text_width
+          end
         end
 
         cur_byte = f.range[4]

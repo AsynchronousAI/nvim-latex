@@ -176,8 +176,8 @@ function M.setup(opts)
     end,
   })
 
-  -- Window / Terminal resize (recalculate clean line wrapping)
-  vim.api.nvim_create_autocmd({ "VimResized", "WinResized" }, {
+  -- Window / Terminal resize and scroll (recalculate clean line wrapping)
+  vim.api.nvim_create_autocmd({ "VimResized", "WinResized", "WinScrolled" }, {
     group = augroup,
     callback = function()
       if is_enabled then
